@@ -16,4 +16,4 @@ case "$(uname -s)" in
     ;;
 esac
 
-"$JAI" build.jai -import_dir "source/tbx"
+"$JAI" build.jai

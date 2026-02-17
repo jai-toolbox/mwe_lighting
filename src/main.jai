@@ -130,7 +130,7 @@ main :: () {
     for 1..character.indexed_mesh.positions.count array_add(*character.indexed_mesh.rgb_colors, .{0, .5, .5});
 
     character_local_to_world_index: u32;
-    character.render_object_index, character_local_to_world_index = buffer_object(*windowed_program_3d.per_object_transform_renderer, character.indexed_mesh.indices, character.indexed_mesh.positions, character.indexed_mesh.rgb_colors);
+    character.render_object_index, character_local_to_world_index = buffer_object(*windowed_program_3d.camera_per_object_transform_color_renderer, character.indexed_mesh.indices, character.indexed_mesh.positions, character.indexed_mesh.rgb_colors);
 
     windowed_program_3d.camera.position = Y3 * 2;
     velocity : Vector3;
@@ -143,7 +143,7 @@ main :: () {
         renderable: Renderable;
         renderable.indexed_mesh = it;
         
-        renderable.render_object_index, renderable.local_to_world_index = buffer_object(*windowed_program_3d.per_object_transform_renderer, renderable.indexed_mesh.indices, renderable.indexed_mesh.positions, renderable.indexed_mesh.rgb_colors);
+        renderable.render_object_index, renderable.local_to_world_index = buffer_object(*windowed_program_3d.camera_per_object_transform_color_renderer, renderable.indexed_mesh.indices, renderable.indexed_mesh.positions, renderable.indexed_mesh.rgb_colors);
 
         array_add(*renderables, renderable);
 
@@ -178,11 +178,11 @@ main :: () {
 
 do_collision_simulation :: (windowed_program_3d : *Windowed_Program_3D, delta_time : float, velocity : *Vector3, on_ground : *bool,  character : *Character, map : Collision_Geometries, renderables: [] Renderable, movement_mode: Movement_Mode) {
     // this moves the character to the camera's position
-    // windowed_program_3d.per_object_transform_renderer.local_to_world_matrices[character_local_to_world_index] = make_translation_matrix4(windowed_program_3d.camera.position);
+    // windowed_program_3d.camera_per_object_transform_color_renderer.local_to_world_matrices[character_local_to_world_index] = make_translation_matrix4(windowed_program_3d.camera.position);
 
     // this is the character.
-    // queue_render(*windowed_program_3d.per_object_transform_renderer, character.render_object_index);
-    for renderables queue_render(*windowed_program_3d.per_object_transform_renderer, it.render_object_index);
+    // queue_render(*windowed_program_3d.camera_per_object_transform_color_renderer, character.render_object_index);
+    for renderables queue_render(*windowed_program_3d.camera_per_object_transform_color_renderer, it.render_object_index);
 
     row_major := GL_TRUE;
     num_matrices_we_are_updating :u32 = 1;
@@ -224,7 +224,7 @@ do_collision_simulation :: (windowed_program_3d : *Windowed_Program_3D, delta_ti
 
     velocity.* = new_velocity;
 
-    glUseProgram(windowed_program_3d.per_object_transform_renderer.shader_program_gl_handle);
+    glUseProgram(windowed_program_3d.camera_per_object_transform_color_renderer.shader_program_gl_handle);
 
     Simp.update_window (windowed_program_3d.window);
     Simp.clear_render_target(.15, .08, .08, 1);
@@ -234,7 +234,7 @@ do_collision_simulation :: (windowed_program_3d : *Windowed_Program_3D, delta_ti
 
     glClear (GL_DEPTH_BUFFER_BIT);
 
-    render(*windowed_program_3d.per_object_transform_renderer);
+    render(*windowed_program_3d.camera_per_object_transform_color_renderer);
 
     context.simp.current_shader = null;
     render_tick_stats(windowed_program_3d);

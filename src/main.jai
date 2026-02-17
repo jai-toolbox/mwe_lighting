@@ -30,44 +30,61 @@ convert_obj_to_indexed_meshes :: (obj_data: *Obj_Data) -> [..] Indexed_Mesh {
         
         for *face : obj_object.faces {
             if face.face_vertices.count < 3 continue;
-
-            // now there are at least 3 vertices on this face.
             
             first_index := current_index;
             
             for *fv : face.face_vertices {
                 array_add(*mesh.positions, obj_data.all_positions[fv.position_index]);
                 
-                // handle optional texture coordinates
                 if fv.texture_coordinate_index >= 0 {
                     array_add(*mesh.texture_coordinates, obj_data.all_texture_coordinates[fv.texture_coordinate_index]);
                 } else {
                     array_add(*mesh.texture_coordinates, .{0, 0});
                 }
                 
-                // Handle optional normals
                 if fv.normal_index >= 0 {
                     array_add(*mesh.normals, obj_data.all_normals[fv.normal_index]);
                 } else {
-                    array_add(*mesh.normals, .{0, 1, 0});  // default up normal
+                    array_add(*mesh.normals, .{0, 1, 0});
                 }
-
-                // this is temporary
-                r1 := random_get_zero_to_one();
-                r2 := random_get_zero_to_one();
-                r3 := random_get_zero_to_one();
-                random_color := Vector3.{r1, r2, r3};
-
-                array_add(*mesh.rgb_colors, random_color);
 
                 current_index += 1;
             }
             
-            // fan triangulation (in case there are more than 3 verts on a face)
             for i : 1..face.face_vertices.count-2 {
                 array_add(*mesh.indices, first_index);
                 array_add(*mesh.indices, first_index + cast(u32) i);
                 array_add(*mesh.indices, first_index + cast(u32) i + 1);
+            }
+        }
+
+        if mesh.positions.count > 0 {
+            min_pos := mesh.positions[0];
+            max_pos := mesh.positions[0];
+
+            for mesh.positions {
+                min_pos.x = min(min_pos.x, it.x);
+                min_pos.y = min(min_pos.y, it.y);
+                min_pos.z = min(min_pos.z, it.z);
+                max_pos.x = max(max_pos.x, it.x);
+                max_pos.y = max(max_pos.y, it.y);
+                max_pos.z = max(max_pos.z, it.z);
+            }
+
+            range := max_pos - min_pos;
+
+            if range.x < 0.0001 range.x = 1.0;
+            if range.y < 0.0001 range.y = 1.0;
+            if range.z < 0.0001 range.z = 1.0;
+
+            for mesh.positions {
+                t := (it - min_pos);
+                color := Vector3.{
+                    t.x / range.x,
+                    t.y / range.y,
+                    t.z / range.z,
+                };
+                array_add(*mesh.rgb_colors, color);
             }
         }
         
@@ -77,15 +94,9 @@ convert_obj_to_indexed_meshes :: (obj_data: *Obj_Data) -> [..] Indexed_Mesh {
     return meshes;
 }
 
-Renderable :: struct {
-    indexed_mesh : Indexed_Mesh;
-    local_to_world_index : u32;
-    render_object_index : u32;
-};
-
 Character :: struct {
     using #as cg : Collision_Geometry;
-    using r : Renderable;
+    renderable : Camera_Per_Object_Transform_Color_Renderable;
 }
 
 main :: () {
@@ -101,8 +112,6 @@ main :: () {
     init(*windowed_program_3d);
 
     obj_data := load_obj("data/lair.obj");
-    // obj_data := load_obj("data/gravity_test.obj");
-    // just assuming that meshes live till the end of the program for now.
     meshes := convert_obj_to_indexed_meshes(*obj_data);
 
     map : Collision_Geometries;
@@ -113,44 +122,41 @@ main :: () {
         cg : Collision_Geometry;
         cg.indexed_triangle_positions.indices = it.indices;
         cg.indexed_triangle_positions.positions = it.positions;
-
-
         cg.aabb = create_aabb_from_positions(cg.indexed_triangle_positions.positions);
 
-        array_add(*map.indexed_triangle_positions,cg.indexed_triangle_positions);
-        array_add(*map.aabbs,cg.aabb);
+        array_add(*map.indexed_triangle_positions, cg.indexed_triangle_positions);
+        array_add(*map.aabbs, cg.aabb);
     }
 
     character : Character;
     character.indexed_triangle_positions = create_box(ZERO3, 0.4, 1.75, 0.4); 
     character.aabb = create_aabb_from_positions(character.indexed_triangle_positions.positions);
-    character.indexed_mesh.indices = character.indexed_triangle_positions.indices;
-    character.indexed_mesh.positions = character.indexed_triangle_positions.positions;
 
-    for 1..character.indexed_mesh.positions.count array_add(*character.indexed_mesh.rgb_colors, .{0, .5, .5});
+    character.renderable.indices = character.indexed_triangle_positions.indices;
+    character.renderable.positions = character.indexed_triangle_positions.positions;
+    for 1..character.renderable.positions.count {
+        array_add(*character.renderable.rgb_colors, .{0, .5, .5});
+    }
 
-    character_local_to_world_index: u32;
-    character.render_object_index, character_local_to_world_index = buffer_object(*windowed_program_3d.camera_per_object_transform_color_renderer, character.indexed_mesh.indices, character.indexed_mesh.positions, character.indexed_mesh.rgb_colors);
+    buffer_object(*windowed_program_3d.camera_per_object_transform_color_renderer, *character.renderable);
 
     windowed_program_3d.camera.position = Y3 * 2;
     velocity : Vector3;
     on_ground : bool;
 
-    renderables : [..] Renderable;
+    map_renderables : [..] Camera_Per_Object_Transform_Color_Renderable;
     
-    count := 10;
     for meshes {
-        renderable: Renderable;
-        renderable.indexed_mesh = it;
-        
-        renderable.render_object_index, renderable.local_to_world_index = buffer_object(*windowed_program_3d.camera_per_object_transform_color_renderer, renderable.indexed_mesh.indices, renderable.indexed_mesh.positions, renderable.indexed_mesh.rgb_colors);
+        renderable: Camera_Per_Object_Transform_Color_Renderable;
+        renderable.indices = it.indices;
+        renderable.positions = it.positions;
+        renderable.rgb_colors = it.rgb_colors;
 
-        array_add(*renderables, renderable);
+        buffer_object(*windowed_program_3d.camera_per_object_transform_color_renderer, *renderable);
 
-        count += 1;
+        array_add(*map_renderables, renderable);
     }
 
-    quit := false;
     while !windowed_program_3d.end_program {
 
         mark_frame_start(*windowed_program_3d);
@@ -161,13 +167,12 @@ main :: () {
         per_frame_update(*windowed_program_3d);
 
         if (windowed_program_3d.current_menu == .NONE) {
-            do_collision_simulation(*windowed_program_3d, windowed_program_3d.delta_time, *velocity, *on_ground, *character, map, renderables, movement_mode);
+            do_collision_simulation(*windowed_program_3d, windowed_program_3d.delta_time, *velocity, *on_ground, *character, map, map_renderables, movement_mode);
             context.simp.current_shader = null; 
         } else {
             context.simp.current_shader = null;
             clear_render_target(.35, .35, .35, 1);
             render_menus(*windowed_program_3d.wp);
-            // swap_buffers(windowed_program_3d.window, windowed_program_3d.vsync);
             swap_buffers(windowed_program_3d.window, false);
         }
 
@@ -176,16 +181,9 @@ main :: () {
     }
 }
 
-do_collision_simulation :: (windowed_program_3d : *Windowed_Program_3D, delta_time : float, velocity : *Vector3, on_ground : *bool,  character : *Character, map : Collision_Geometries, renderables: [] Renderable, movement_mode: Movement_Mode) {
-    // this moves the character to the camera's position
-    // windowed_program_3d.camera_per_object_transform_color_renderer.local_to_world_matrices[character_local_to_world_index] = make_translation_matrix4(windowed_program_3d.camera.position);
+do_collision_simulation :: (windowed_program_3d : *Windowed_Program_3D, delta_time : float, velocity : *Vector3, on_ground : *bool, character : *Character, map : Collision_Geometries, map_renderables: [] Camera_Per_Object_Transform_Color_Renderable, movement_mode: Movement_Mode) {
 
-    // this is the character.
-    // queue_render(*windowed_program_3d.camera_per_object_transform_color_renderer, character.render_object_index);
-    for renderables queue_render(*windowed_program_3d.camera_per_object_transform_color_renderer, it.render_object_index);
-
-    row_major := GL_TRUE;
-    num_matrices_we_are_updating :u32 = 1;
+    for map_renderables queue_render(*windowed_program_3d.camera_per_object_transform_color_renderer, it.object_index);
 
     if (movement_mode == .GOD) {
         gmi := God_Mode_Input.{

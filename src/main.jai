@@ -84,6 +84,8 @@ convert_obj_to_indexed_meshes :: (obj_data: *Obj_Data) -> [..] Indexed_Mesh {
                     t.y / range.y,
                     t.z / range.z,
                 };
+
+                color = .{0.5, 0.5, 0.5};
                 array_add(*mesh.rgb_colors, color);
             }
         }
@@ -109,7 +111,14 @@ main :: () {
 
     windowed_program_3d.camera.offset = Y3 * 1.75 * 0.25;
 
-    init(*windowed_program_3d);
+    init(*windowed_program_3d); // opengl initialized after this point
+
+    deferred_lighting : Deferred_Lighting;
+    init(*deferred_lighting, windowed_program_3d.window_width, windowed_program_3d.window_height);
+
+    add_light(*deferred_lighting, .{0, 10, 0}, .{1.0, 1.0, 1.0});   // white overhead
+    // add_light(*deferred_lighting, .{-3.0, 2.0, 1.0}, .{1.0, 0.2, 0.2});   // reddish
+    // add_light(*deferred_lighting, .{0.0, 1.5, 3.0},  .{0.2, 0.2, 1.0});   // bluish
 
     obj_data := load_obj("data/lair.obj");
     meshes := convert_obj_to_indexed_meshes(*obj_data);
@@ -132,27 +141,20 @@ main :: () {
     character.indexed_triangle_positions = create_box(ZERO3, 0.4, 1.75, 0.4); 
     character.aabb = create_aabb_from_positions(character.indexed_triangle_positions.positions);
 
-    character.renderable.indices = character.indexed_triangle_positions.indices;
-    character.renderable.positions = character.indexed_triangle_positions.positions;
-    for 1..character.renderable.positions.count {
-        array_add(*character.renderable.rgb_colors, .{0, .5, .5});
-    }
-
-    buffer_object(*windowed_program_3d.camera_per_object_transform_color_renderer, *character.renderable);
-
     windowed_program_3d.camera.position = Y3 * 2;
     velocity : Vector3;
     on_ground : bool;
 
-    map_renderables : [..] Camera_Per_Object_Transform_Color_Renderable;
+    map_renderables : [..] Camera_Per_Object_Transform_Deferred_Lighting_Geometry_Pass_Renderable;
     
     for meshes {
-        renderable: Camera_Per_Object_Transform_Color_Renderable;
+        renderable : Camera_Per_Object_Transform_Deferred_Lighting_Geometry_Pass_Renderable;
         renderable.indices = it.indices;
         renderable.positions = it.positions;
         renderable.rgb_colors = it.rgb_colors;
+        renderable.normals = it.normals;
 
-        buffer_object(*windowed_program_3d.camera_per_object_transform_color_renderer, *renderable);
+        buffer_object(*deferred_lighting.geometry_pass_renderer, *renderable);
 
         array_add(*map_renderables, renderable);
     }
@@ -167,7 +169,54 @@ main :: () {
         per_frame_update(*windowed_program_3d);
 
         if (windowed_program_3d.current_menu == .NONE) {
-            do_collision_simulation(*windowed_program_3d, windowed_program_3d.delta_time, *velocity, *on_ground, *character, map, map_renderables, movement_mode);
+
+            old_velocity := velocity;
+            new_velocity : Vector3;
+            if (movement_mode == .FPS) {
+                fpmi := First_Person_Movement_Input.{
+                    is_key_down (xx #char "W"),
+                    is_key_down (xx #char "S"),
+                    is_key_down (xx #char "D"),
+                    is_key_down (xx #char "A"),
+                    is_key_down (xx #char " "),
+                }; 
+
+                ground_state : Ground_State = ifx on_ground then .ON_GROUND else .IN_AIR;
+
+                new_velocity = get_new_first_person_velocity(velocity, fpmi, get_forward(*windowed_program_3d.camera), windowed_program_3d.delta_time, ground_state, Movement_Params.{acceleration_mpss = 20});
+            }
+
+            ellipsoid_radius := v3(0.4, 1.75 / 2, 0.4);  
+            displacement := displacement_from_kinematic_update(old_velocity, new_velocity, windowed_program_3d.delta_time);
+            resolve_collisions_against_body_ellipsoid(map, ellipsoid_radius, *windowed_program_3d.camera.position, *displacement, *on_ground);
+
+            velocity = new_velocity;
+
+            glUseProgram(deferred_lighting.geometry_pass_renderer.shader_program_gl_handle);
+            set_world_to_camera_uniform(*deferred_lighting.geometry_pass_renderer, windowed_program_3d.camera.world_to_camera);
+            set_camera_to_clip_uniform(*deferred_lighting.geometry_pass_renderer, windowed_program_3d.camera.camera_to_clip);
+            glUseProgram(0);
+
+            glUseProgram(deferred_lighting.compute_light_pass_renderer.shader_program_gl_handle);
+            set_aspect_ratio_uniform(*deferred_lighting.compute_light_pass_renderer, Vector2.{xx windowed_program_3d.window_width, xx windowed_program_3d.window_height});
+            glUseProgram(0);
+
+            for map_renderables queue_render(*deferred_lighting.geometry_pass_renderer, it.object_index);
+
+            Simp.update_window(windowed_program_3d.window);
+
+            glDepthMask(GL_TRUE);
+            glEnable(GL_DEPTH_TEST);
+
+            render(*deferred_lighting, windowed_program_3d.camera.position);
+
+            // we render the ui on top
+            context.simp.current_shader = null;
+            render_tick_stats(*windowed_program_3d);
+            render_camera_stats(*windowed_program_3d);
+
+            swap_buffers(windowed_program_3d.window, false);
+
             context.simp.current_shader = null; 
         } else {
             context.simp.current_shader = null;
@@ -179,64 +228,11 @@ main :: () {
         sleep_to_maintain_max_fps(*windowed_program_3d);
         mark_frame_end(*windowed_program_3d);
     }
+
+    deinit(*deferred_lighting);
 }
 
 do_collision_simulation :: (windowed_program_3d : *Windowed_Program_3D, delta_time : float, velocity : *Vector3, on_ground : *bool, character : *Character, map : Collision_Geometries, map_renderables: [] Camera_Per_Object_Transform_Color_Renderable, movement_mode: Movement_Mode) {
 
-    for map_renderables queue_render(*windowed_program_3d.camera_per_object_transform_color_renderer, it.object_index);
 
-    if (movement_mode == .GOD) {
-        gmi := God_Mode_Input.{
-            is_key_down (xx #char "E"),
-            is_key_down (xx #char "Q"),
-            is_key_down (xx #char "W"),
-            is_key_down (xx #char "S"),
-            is_key_down (xx #char "D"),
-            is_key_down (xx #char "A"),
-            is_key_down (xx #char " "),
-            is_key_down (Input.Key_Code.SHIFT),
-        }; 
-
-        velocity.* = get_new_god_mode_velocity(velocity.*, get_forward(*windowed_program_3d.camera), gmi, delta_time);
-    } 
-
-    old_velocity := velocity.*;
-    new_velocity : Vector3;
-    if (movement_mode == .FPS) {
-        fpmi := First_Person_Movement_Input.{
-            is_key_down (xx #char "W"),
-            is_key_down (xx #char "S"),
-            is_key_down (xx #char "D"),
-            is_key_down (xx #char "A"),
-            is_key_down (xx #char " "),
-        }; 
-
-        ground_state : Ground_State = ifx on_ground.* then .ON_GROUND else .IN_AIR;
-
-        new_velocity = get_new_first_person_velocity(velocity.*, fpmi, get_forward(*windowed_program_3d.camera), delta_time, ground_state, Movement_Params.{acceleration_mpss = 20});
-    }
-
-    ellipsoid_radius := v3(0.4, 1.75 / 2, 0.4);  
-    displacement := displacement_from_kinematic_update(old_velocity, new_velocity, delta_time);
-    resolve_collisions_against_body_ellipsoid(map, ellipsoid_radius, *windowed_program_3d.camera.position, *displacement, on_ground);
-
-    velocity.* = new_velocity;
-
-    glUseProgram(windowed_program_3d.camera_per_object_transform_color_renderer.shader_program_gl_handle);
-
-    Simp.update_window (windowed_program_3d.window);
-    Simp.clear_render_target(.15, .08, .08, 1);
-
-    glDepthMask (GL_TRUE);
-    glEnable (GL_DEPTH_TEST);
-
-    glClear (GL_DEPTH_BUFFER_BIT);
-
-    render(*windowed_program_3d.camera_per_object_transform_color_renderer);
-
-    context.simp.current_shader = null;
-    render_tick_stats(windowed_program_3d);
-    render_camera_stats(windowed_program_3d);
-
-    swap_buffers(windowed_program_3d.window, false);
 }
